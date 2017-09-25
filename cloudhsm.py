@@ -7,15 +7,17 @@ from time import sleep
 
 def check_cluster_state(cluster_id, state):
     """
-    Check the status of cluster identified by cluster id and returns True
-    if it matches and False otherwise.
+    Check the status of a cluster.
+
+    Check the status of a cluster identified by cluster_id against provided string
+    and returns True if it matches and False otherwise.
 
     Args:
         cluster_id  (str): CloudHSM clusterId, as string.
         state       (str): State to compare, as string.
 
     Returns:
-        The return value. True for success, False otherwise.
+        True if the state matches the passed string, False otherwise.
     """
 
     client = boto3.client('cloudhsmv2')
@@ -28,8 +30,10 @@ def check_cluster_state(cluster_id, state):
 
 def check_hsm_state(cluster_id, hsm_id, state):
     """
-    Check the status of HSM instance identified by cluster id and hsm id and returns True
-    if it matches and False otherwise.
+    Check the status of an HSM instance.
+
+    Check the status of an HSM instance identified by cluster_id and hsm_id against
+    provided string and returns True if it matches and False otherwise.
 
     Args:
         cluster_id  (str): CloudHSM clusterId, as string.
@@ -37,7 +41,7 @@ def check_hsm_state(cluster_id, hsm_id, state):
         state       (str): State to compare, as string.
 
     Returns:
-        The return value. True for success, False otherwise.
+        True if the state matches the passed string, False otherwise.
     """
 
     client = boto3.client('cloudhsmv2')
@@ -59,8 +63,10 @@ def check_hsm_state(cluster_id, hsm_id, state):
 @click.argument('cluster_hsm_count')
 def create_cluster(cluster_tag_key, cluster_tag_value, cluster_subnet_id, cluster_az, cluster_hsm_count):
     """
-    Create or update Cloud HSM cluster identified by cluster tag key and cluster tag value in order
-    to deliver some kind of resource idemnpotency.
+    Create or update Cloud HSM cluster.
+
+    Create or update Cloud HSM cluster identified by cluster_tag_key and cluster_tag_value in order
+    to deliver emulated resource idempotency.
 
     Args:
         cluster_tag_key     (str): Tag key name used to identify the cluster to work on.
@@ -89,7 +95,8 @@ def create_cluster(cluster_tag_key, cluster_tag_value, cluster_subnet_id, cluste
                 cluster_id = cluster['ClusterId']
                 break
 
-        # if required cluster was found, exit the loop
+        # if the cluster_id is None at this stage, a cluster with provided tags value
+        # was found and there is no need to continue searching
         if cluster_id is not None:
             print('* Found cluster: {}.'.format(cluster_id))
             break
