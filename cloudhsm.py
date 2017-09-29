@@ -22,6 +22,7 @@ def check_cluster_state(cluster_id, state):
 
     client = boto3.client('cloudhsmv2')
     response = client.describe_clusters(Filters={'clusterIds': [cluster_id]})
+
     if response['Clusters'][0]['State'] == state:
         return True
     else:
@@ -53,6 +54,124 @@ def check_hsm_state(cluster_id, hsm_id, state):
                 return True
             else:
                 return False
+
+
+def set_cluster_hsm_count(cluster_id, cluster_hsm_count):
+    """
+    Create or delete cluster HSM instances.
+
+    Checks the number of current HSM instances in a cluster identified by cluster_id
+    and depending on the amount required provided in cluster_hsm_count creates or deletes
+    HSM instances.
+
+    Args:
+        cluster_id          (str): CloudHSM clusterId, as string.
+        cluster_hsm_count   (int): Required number of HSM instances in the cluster, as integer.
+
+    Returns:
+        None.
+    """
+
+    client = boto3.client('cloudhsmv2')
+    response = client.describe_clusters(Filters={'clusterIds': [cluster_id]})
+    current_hsm_count = len(response['Clusters'][0]['Hsms'])
+
+    if current_hsm_count == cluster_hsm_count:
+        print('* No new HSM instances are required in cluster: {}.'.format(
+            cluster_id))
+
+    elif current_hsm_count == 1 and check_cluster_state(cluster_id, 'UNINITIALIZED'):
+        print('** Number of HSM instances in cluster: {} is lower than required but the cluster must be '
+              'initialised first to increase the number of HSM instances.'.format(cluster_id))
+
+    elif current_hsm_count < cluster_hsm_count:
+        print(
+            '** Number of HSM instances in cluster: {} is lower than required.'.
+            format(cluster_id))
+        for i in xrange(cluster_hsm_count):
+            response = client.create_hsm(
+                ClusterId=cluster_id, AvailabilityZone=cluster_az)
+            hsm_id = response['Hsm']['HsmId']
+            print('** Creating HSM instance: {} in cluster: {}.'.format(
+                hsm_id, cluster_id))
+
+            limit_counter = 0
+            while not check_hsm_state(cluster_id, hsm_id, 'ACTIVE') and limit_counter < 15:
+                print(
+                    '* Waiting for initialization of HSM instance: {}, sleeping for 60 seconds.'.
+                    format(hsm_id))
+                limit_counter += 1
+                sleep(60)
+            print('* HSM instance: {} is ready.'.format(hsm_id))
+
+    elif current_hsm_count > cluster_hsm_count:
+        print(
+            '** Number of HSM instances in cluster: {} is higher than required.'.
+            format(cluster_id))
+
+        for i in xrange(current_hsm_count - cluster_hsm_count):
+            hsm_id = response['Clusters'][0]['Hsms'][i]['HsmId']
+            client.delete_hsm(ClusterId=cluster_id, HsmId=hsm_id)
+            print('** Deleting HSM instance: {} in cluster: {}.'.format(
+                hsm_id, cluster_id))
+
+
+def set_cluster_tags(cluster_id, cluster_tag_key, cluster_tag_value):
+    """
+    Set Cloud HSM cluster tags.
+
+    Sets predefined tag key/value pair on cluster identified by cluster_id in order to be able to simulate
+    idemnpotency by detecting clusters to process by their tags.
+
+    Args:
+        cluster_id          (str): CloudHSM clusterId, as string.
+        cluster_tag_key     (str): Cluster tag name, as string.
+        cluster_tag_value   (str): Cluster tag value, as string.
+
+    Returns:
+        None.
+    """
+
+    client = boto3.client('cloudhsmv2')
+    client.tag_resource(
+        ResourceId=cluster_id,
+        TagList=[{
+            'Key': cluster_tag_key,
+            'Value': cluster_tag_value
+        }])
+    print('** Tagged cluster: {} with tag name: {} and value: {}.'.format(
+        cluster_id, cluster_tag_key, cluster_tag_value))
+
+
+def init_cluster(cluster_subnet_id, hsm_type='hsm1.medium'):
+    """
+    Initialise Cloud HSM cluster.
+
+    Initialise Cloud HSM cluster in a subnet identified by cluster_subnet_idc with HSM instance type of hsm_type,
+    currently defaulting to hsm1.medium.
+
+    Args:
+        cluster_subnet_id   (str): Subnet in which CloudHSM cluster should be located, must be within cluster az.
+        hsm_type            (str): HSM instance type, currently only hsm1.medium is avalable.
+
+    Returns:
+        None.
+    """
+
+    client = boto3.client('cloudhsmv2')
+    response = client.create_cluster(
+        SubnetIds=[cluster_subnet_id], HsmType=hsm_type)
+    cluster_id = response['Cluster']['ClusterId']
+    print('** Created cluster: {}.'.format(cluster_id))
+
+    limit_counter = 0
+    while not check_cluster_state(cluster_id, 'UNINITIALIZED') and limit_counter < 20:
+        print(
+            '* Waiting for creation of cluster: {}, sleeping for 10 seconds.'.
+            format(cluster_id))
+        limit_counter += 1
+        sleep(10)
+    print('* Cluster: {} is ready.'.format(cluster_id))
 
 
 @click.command()
@@ -104,74 +223,13 @@ def create_cluster(cluster_tag_key, cluster_tag_value, cluster_subnet_id, cluste
     # create required cluster if it wasn't found
     if cluster_id is None:
         print('** Required cluster not found, creating new one.')
-        response = client.create_cluster(
-            SubnetIds=[cluster_subnet_id], HsmType='hsm1.medium')
-        cluster_id = response['Cluster']['ClusterId']
-        print('** Created cluster: {}.'.format(cluster_id))
-
-        limit_counter = 0
-        while not check_cluster_state(cluster_id, 'UNINITIALIZED') and limit_counter < 20:
-            print(
-                '* Waiting for creation of cluster: {}, sleeping for 10 seconds.'.
-                format(cluster_id))
-            limit_counter += 1
-            sleep(10)
-        print('* Cluster: {} is ready.'.format(cluster_id))
+        init_cluster(cluster_subnet_id)
 
         # tag new cluster with required name and value so that resource would be artificially idemnpotent
-        response = client.tag_resource(
-            ResourceId=cluster_id,
-            TagList=[{
-                'Key': cluster_tag_key,
-                'Value': cluster_tag_value
-            }])
-        print('** Tagged cluster: {} with tag name: {} and value: {}.'.format(
-            cluster_id, cluster_tag_key, cluster_tag_value))
+        set_cluster_tags(cluster_id, cluster_tag_key, cluster_tag_value)
 
     # check number of hsm's and create or delete as needed
-    response = client.describe_clusters(Filters={'clusterIds': [cluster_id]})
-    current_hsm_count = len(response['Clusters'][0]['Hsms'])
-    print('* Found: {} HSM instances in cluster: {}.'.format(
-        current_hsm_count, cluster_id))
-
-    if current_hsm_count == cluster_hsm_count:
-        print('* No new HSM instances are required in cluster: {}.'.format(
-            cluster_id))
-
-    elif current_hsm_count == 1 and check_cluster_state(cluster_id, 'UNINITIALIZED'):
-        print('** Number of HSM instances in cluster: {} is lower than required but the cluster must be '
-              'initialised first to increase the number of HSM instances.'.format(cluster_id))
-
-    elif current_hsm_count < cluster_hsm_count:
-        print(
-            '** Number of HSM instances in cluster: {} is lower than required.'.
-            format(cluster_id))
-        for i in xrange(cluster_hsm_count):
-            response = client.create_hsm(
-                ClusterId=cluster_id, AvailabilityZone=cluster_az)
-            hsm_id = response['Hsm']['HsmId']
-            print('** Creating HSM instance: {} in cluster: {}.'.format(
-                hsm_id, cluster_id))
-
-            limit_counter = 0
-            while not check_hsm_state(cluster_id, hsm_id, 'ACTIVE') and limit_counter < 15:
-                print(
-                    '* Waiting for initialization of HSM instance: {}, sleeping for 60 seconds.'.
-                    format(hsm_id))
-                limit_counter += 1
-                sleep(60)
-            print('* HSM instance: {} is ready.'.format(hsm_id))
-
-    elif current_hsm_count > cluster_hsm_count:
-        print(
-            '** Number of HSM instances in cluster: {} is higher than required.'.
-            format(cluster_id))
-
-        for i in xrange(current_hsm_count - cluster_hsm_count):
-            hsm_id = response['Clusters'][0]['Hsms'][i]['HsmId']
-            client.delete_hsm(ClusterId=cluster_id, HsmId=hsm_id)
-            print('** Deleting HSM instance: {} in cluster: {}.'.format(
-                hsm_id, cluster_id))
+    set_cluster_hsm_count(cluster_id, cluster_hsm_count)
 
 
 if __name__ == "__main__":
